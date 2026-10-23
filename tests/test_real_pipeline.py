@@ -161,3 +161,12 @@ def test_stream_restart_gives_independent_sessions(model_home):
     assert reports[0].session_id != reports[1].session_id
     assert abs(a - b) <= 1, "second run must not accumulate the first run's counts"
     repo.close()
+
+
+def test_ultralytics_analytics_disabled_after_load(detector):
+    from ultralytics.utils import SETTINGS
+    from ultralytics.utils.events import events
+
+    assert SETTINGS["sync"] is False
+    events.__init__()  # re-evaluate the enable condition with current settings
+    assert events.enabled is False

@@ -28,6 +28,16 @@ class ModelError(RuntimeError):
     pass
 
 
+def disable_ultralytics_analytics() -> None:
+    """Turn off Ultralytics' anonymous usage analytics ("sync") in the
+    project-local settings file. Its predictor callbacks would otherwise send
+    events whenever the library considers itself online."""
+    from ultralytics.utils import SETTINGS
+
+    if SETTINGS.get("sync", True):
+        SETTINGS.update({"sync": False})
+
+
 def resolve_device(preference: str) -> str:
     """Map 'auto' | 'cpu' | 'gpu' to a torch device string."""
     import torch
@@ -55,6 +65,7 @@ def download_weights(name: str, dest_dir: Optional[Path] = None) -> Path:
     if target.is_file():
         return target
     try:
+        disable_ultralytics_analytics()
         from ultralytics.utils.downloads import attempt_download_asset
 
         result = Path(attempt_download_asset(str(target)))
@@ -101,6 +112,8 @@ class Detector:
         try:
             import ultralytics
             from ultralytics import YOLO
+
+            disable_ultralytics_analytics()
 
             model = YOLO(str(path), task="detect")
         except Exception as exc:

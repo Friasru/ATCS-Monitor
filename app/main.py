@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="atcs-monitor", description=f"{APP_NAME} {__version__}")
     ap.add_argument("--video", help="pre-select a video file as source")
     ap.add_argument("--start", action="store_true", help="start monitoring immediately")
+    ap.add_argument("--record", action="store_true", help="with --start: begin recording as soon as detection runs")
     ap.add_argument("--quit-after", type=int, default=0, metavar="MS",
                     help="close the window after MS milliseconds (launch checks)")
     ap.add_argument("--verbose", action="store_true")
@@ -77,6 +78,16 @@ def main(argv: list[str] | None = None) -> int:
         win.add_video_source(args.video)
         if args.start:
             QTimer.singleShot(300, win.start_monitoring)
+            if args.record:
+                from app.services.monitoring import State
+
+                def record_when_ready():
+                    if win.state == State.DETECTING:
+                        win.start_recording()
+                    elif win.state in (State.INITIALIZING, State.IDLE):
+                        QTimer.singleShot(200, record_when_ready)
+
+                QTimer.singleShot(500, record_when_ready)
     if args.quit_after > 0:
         QTimer.singleShot(args.quit_after, win.close)
     rc = app.exec()

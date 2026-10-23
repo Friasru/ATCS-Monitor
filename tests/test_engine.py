@@ -261,3 +261,36 @@ def test_stop_while_recording_finalizes(repo, tmp_path):
     assert eng.last_recording is not None and eng.last_recording.ok
     s = repo.get_session(eng.last_report.session_id)
     assert s["recordings"][0]["ok"]
+
+
+def test_replayed_video_keeps_recording_timeline(repo, tmp_path):
+    """With 'Replay video', media time must keep increasing so the recorder
+    does not discard frames after the first loop."""
+    eng, errors, _ = engine(repo, tmp_path)
+    eng.start(VideoFileSource(make_video(tmp_path / "v.mp4", n=10, fps=10), realtime=True), loop=True)
+    assert wait(lambda: eng.state == State.DETECTING)
+    eng.start_recording()
+    assert wait(lambda: eng.latest_snapshot().media_time > 2.5, timeout=30)
+    eng.stop(wait=True)
+    res = eng.last_recording
+    assert res.ok, res.error
+    assert res.frames_skipped <= 1
+    assert res.frames_written >= 20  # more than two loops of a 10-frame file
+
+
+def test_internal_crash_keeps_counts_already_made(repo, tmp_path):
+    class CrashAfter(ScriptedDetector):
+        def track(self, image, *a, **k):
+            if self.calls >= 25:
+                self.calls += 1
+                return [object()]  # malformed result -> counting code raises
+            return super().track(image, *a, **k)
+
+    eng, errors, states = engine(repo, tmp_path, CrashAfter())
+    eng.start(VideoFileSource(make_video(tmp_path / "v.mp4", n=30), realtime=False))
+    eng.join()
+    assert states[-1] == State.ERROR and errors[-1].startswith("Internal error")
+    s = repo.get_session(eng.last_report.session_id)
+    assert s["status"] == "error"
+    assert s["stats"]["crossings"]["car"] == 1  # not wiped to zero
+    assert len(repo.crossing_events(s["session_id"])) == 1

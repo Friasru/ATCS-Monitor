@@ -211,6 +211,8 @@ class MonitoringEngine:
         recorder: Optional[VideoRecorder] = None
         rec_id: Optional[int] = None
         session_id = ""
+        counter: Optional[CountingEngine] = None
+        session_t0, processed, infer_time, recording_seconds = time.monotonic(), 0, 0.0, 0.0
         status, error = "completed", None
         capture_error: list[str] = []
         try:
@@ -234,10 +236,7 @@ class MonitoringEngine:
             capture = CaptureWorker(source, buffer, capture_error.append, loop=loop)
             capture.start()
             infer_meter, rec_meter = RateMeter(), RateMeter()
-            processed = 0
-            infer_time = 0.0
             consecutive_failures = 0
-            recording_seconds = 0.0
             imgsz = s.effective_imgsz(detector.device)
             min_interval = 1.0 / s.max_processing_fps if s.max_processing_fps > 0 else 0.0
             last_proc = 0.0
@@ -380,11 +379,23 @@ class MonitoringEngine:
             self._set_state(State.ERROR, str(exc))
         except Exception as exc:  # exception boundary for the pipeline thread
             log.exception("Pipeline crashed")
-            self._cleanup(capture, source, recorder, rec_id, writer)
-            if session_id:
-                self._mark_session(session_id, "error", f"Internal error: {exc}")
-            self._report_error(f"Internal error: {exc}")
-            self._set_state(State.ERROR, f"Internal error: {exc}")
+            message = f"Internal error: {exc}"
+            self._cleanup(capture, source, recorder, rec_id, None)
+            saved = False
+            if session_id and counter is not None:
+                try:  # keep what was counted so far
+                    self._close_session(session_id, counter, writer, session_t0, processed, infer_time, capture,
+                                        recording_seconds, "error", message)
+                    saved = True
+                except Exception:
+                    log.exception("Could not save session after crash")
+            if not saved:
+                if writer is not None:
+                    writer.flush_and_stop()
+                if session_id:
+                    self._mark_session(session_id, "error", message)
+            self._report_error(message)
+            self._set_state(State.ERROR, message)
 
     def _reconnect(self, source: CameraSource) -> bool:
         source.close()

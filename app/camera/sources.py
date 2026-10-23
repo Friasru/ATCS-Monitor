@@ -202,6 +202,7 @@ class VideoFileSource(FrameSource):
         self._count = 0
         self._frame_total = 0
         self._t_start = 0.0
+        self._time_offset = 0.0  # media time keeps increasing across replays
 
     @property
     def identifier(self) -> str:
@@ -244,18 +245,19 @@ class VideoFileSource(FrameSource):
         ok, img = self._cap.read()
         if not ok or img is None:
             return None  # end of video
-        media_time = self._count / self._fps
+        local = self._count / self._fps
         if self.realtime:
-            delay = self._t_start + media_time - time.monotonic()
+            delay = self._t_start + local - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-        f = Frame(img, self._count, time.time(), media_time)
+        f = Frame(img, self._count, time.time(), self._time_offset + local)
         self._count += 1
         return f
 
     def rewind(self) -> None:
         if self._cap is not None:
             self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self._time_offset += self._count / self._fps
             self._count = 0
             self._t_start = time.monotonic()
 
