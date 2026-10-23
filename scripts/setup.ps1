@@ -2,15 +2,18 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1          auto: CUDA 12.8 torch if nvidia-smi works
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Cpu     force CPU-only torch (much smaller)
 #   ... -Python "C:\Path\to\python.exe"                                  use a specific interpreter
+#   ... -Cpu -Venv .venv-win-cpu                                          separate CPU-only environment (for the
+#                                                                          lightweight build: build.ps1 -Venv .venv-win-cpu)
 # The Linux/WSL environment (.venv, scripts/setup.sh) is separate and unaffected.
 param(
     [switch]$Cpu,
-    [string]$Python = ""
+    [string]$Python = "",
+    [string]$Venv = ".venv-win"
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$Venv = Join-Path $Root ".venv-win"
+if (-not [IO.Path]::IsPathRooted($Venv)) { $Venv = Join-Path $Root $Venv }
 $VPy = Join-Path $Venv "Scripts\python.exe"
 
 function Invoke-Checked {
@@ -38,7 +41,7 @@ if (-not (Test-Path $VPy)) {
     $py = Find-Python
     $check = & $py -c "import sys, struct; print(sys.version_info >= (3, 10) and struct.calcsize('P') == 8)"
     if ("$check".Trim() -ne "True") { throw "$py is not a 64-bit Python 3.10+" }
-    Write-Host "Creating .venv-win with $py"
+    Write-Host "Creating $Venv with $py"
     Invoke-Checked $py @("-m", "venv", $Venv)
 }
 

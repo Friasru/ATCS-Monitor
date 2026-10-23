@@ -75,6 +75,13 @@ class SettingsDialog(QDialog):
         self.hyst = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=0.2, singleStep=0.005, value=settings.hysteresis_frac)
         form.addRow("Line dead zone (fraction of diagonal)", self.hyst)
 
+        self.travel = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=2.0, singleStep=0.05,
+                                     value=settings.min_travel_frac)
+        self.travel.setToolTip("How far an object must move across the line, as a fraction of its own size, "
+                               "before the crossing counts. Stops large objects that sit or stand on the line "
+                               "from being counted when their box drifts. 0 = off.")
+        form.addRow("Crossing travel (fraction of object size)", self.travel)
+
         self.log_level = QComboBox()
         self.log_level.addItems(LOG_LEVELS)
         self.log_level.setCurrentText(settings.event_log_level)
@@ -122,6 +129,7 @@ class SettingsDialog(QDialog):
         s.min_hits = int(self.min_hits.value())
         s.anchor = self.anchor.currentText()
         s.hysteresis_frac = round(self.hyst.value(), 3)
+        s.min_travel_frac = round(self.travel.value(), 2)
         s.event_log_level = self.log_level.currentText()
         s.recording_overlay = self.overlay.isChecked()
         s.enabled_classes = [c for c in MONITORED_CLASSES if self.class_boxes[c].isChecked()]

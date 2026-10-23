@@ -170,6 +170,7 @@ recording file). Selecting a session shows its stored statistics and recording s
 | Frames to confirm a track | 3 | before it counts as unique or crosses |
 | Crossing anchor point | center | `bottom_center` suits elevated cameras looking at the ground |
 | Line dead zone | 0.01 | fraction of the frame diagonal (hysteresis) |
+| Crossing travel | 0.4 | how far an object must move across the line, as a fraction of its own size, before it counts; see [docs/counting_accuracy.md](docs/counting_accuracy.md) |
 | Event log detail | tracks | `none` (crossings only), `tracks` (+ track confirmed/lost), `all` (+ every detection) |
 | Burn count overlay | on | |
 | Detected classes | all six | |
@@ -199,11 +200,16 @@ every new session, so IDs restart at 1. Each class votes per frame, and a track'
 
 **Crossing rule.** For every track and line, the engine stores the last *stable* side of the line and
 the anchor position there. Positions inside the dead zone are ignored. A crossing is counted only when the
-track reaches the opposite side **and** the segment between the two positions intersects the
-*finite* line segment, so going around the end of the line is not a crossing. A crossing by a
-not-yet-confirmed track is held, then committed once the track is confirmed. These cases are covered by
-`tests/test_counter.py`: stationary objects, jitter, oscillation, simultaneous crossings,
-disappear/return, ID change, line moved mid-session and stream restart.
+track reaches the opposite side, **and** the segment between the two positions intersects the
+*finite* line segment (going around the end of the line is not a crossing), **and** the anchor has
+travelled at least *Crossing travel* × the object's size from its farthest point on the old side. The
+travel rule stops a large object that sits or stands on the line, such as a person in front of a webcam,
+from being counted when its box drifts. It was measured against labelled clips and a real webcam
+recording without losing a legitimate crossing ([docs/counting_accuracy.md](docs/counting_accuracy.md)).
+A crossing by a not-yet-confirmed track is held, then committed once the track is confirmed. These cases are covered by
+`tests/test_counter.py`: stationary objects, jitter, oscillation, drift of large boxes, slow, reverse and
+simultaneous crossings, objects growing or shrinking with distance, disappear/return, ID changes, line moved
+mid-session, stream restart, and recorded webcam detections.
 
 ## Data, recordings and export
 
@@ -271,9 +277,13 @@ Main limitations:
   (see `test_track_id_switch_overcounts_and_this_is_visible`). No tracker gives perfect identity.
 * **Riders.** A cyclist or motorcyclist is usually detected as a vehicle **and** a person, and both are counted.
 * **Night and glare** reduce recall, especially for motorcycles (seen in the Cebu night clip).
-* **Physical webcam: not verified in this environment.** WSL2 exposes no `/dev/video*` devices here,
-  so the camera code path was tested only with simulated sources. See [Testing](#testing).
-* Windows/macOS camera back-ends are untested.
+* **Physical webcam:** WSL2 exposes no `/dev/video*` devices here. The webcam was validated natively on
+  Windows (DirectShow) instead; see [docs/windows.md](docs/windows.md#9-validation-results-2026-10-23).
+  Counting a person who deliberately walks across the line has been checked on a recorded webcam clip,
+  but not yet live ([docs/counting_accuracy.md](docs/counting_accuracy.md#5-results)).
+* **Large objects on the line.** The travel rule suppresses drift, but a person who walks back in and
+  sits down just past the line is counted, because their centre crossed after a full walk.
+* The macOS camera back-end is untested.
 
 ## Testing
 
@@ -316,7 +326,7 @@ Verified for the packaged build: it was launched from `/tmp` with
 saved a recording that was validated (224 frames, 14.9 s, first and last frames decodable), stored the session
 in its own `data/` folder, and exited with code 0.
 
-**Windows:** `scripts\build.ps1` builds `dist\windows\atcs-monitor\atcs-monitor.exe` (4.48 GB with CUDA). It was validated on the built-in webcam and on a video file; see [docs/windows.md](docs/windows.md#8-build-the-windows-executable).
+**Windows:** `scripts\build.ps1` builds `dist\windows\atcs-monitor\atcs-monitor.exe`: **3.82 GB** with CUDA, or **0.62 GB** for the CPU-only build (`-Venv .venv-win-cpu -Dist dist\windows-cpu`). Both were validated on the built-in webcam and on video files; see [docs/windows.md](docs/windows.md#8-build-the-windows-executable).
 
 Extra command-line options: `--video FILE`, `--camera INDEX`, `--start`, `--record` (with `--start`), `--quit-after MS`, `--verbose`.
 

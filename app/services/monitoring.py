@@ -203,7 +203,7 @@ class MonitoringEngine:
     def _new_counter(self, s: Settings) -> CountingEngine:
         lines = [CountingLine(**{**ln.to_dict(), "enabled": ln.enabled and s.lines_enabled}) for ln in s.counting_lines()]
         return CountingEngine(lines, min_hits=s.min_hits, hysteresis_frac=s.hysteresis_frac, anchor=s.anchor,
-                              enabled_classes=s.enabled_classes)
+                              enabled_classes=s.enabled_classes, min_travel_frac=s.min_travel_frac)
 
     def _run(self, source: FrameSource, loop: bool) -> None:
         capture: Optional[CaptureWorker] = None

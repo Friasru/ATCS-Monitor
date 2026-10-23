@@ -1,5 +1,7 @@
 """Deterministic counting scenarios (synthetic tracks, no model involved)."""
 
+import random
+
 import pytest
 
 from app.detection.types import Detection
@@ -267,3 +269,181 @@ def test_two_lines_counted_independently():
 def test_line_roundtrip_dict():
     ln = CountingLine("l", (0.2, 0.3), (0.8, 0.6), "b_to_a", False)
     assert CountingLine.from_dict(ln.to_dict()) == ln
+
+
+# ---------------------------------------------------------------------------
+# Travel rule: jitter/drift, standing near the line, slow / reverse crossings,
+# objects growing or shrinking with distance, and ID changes. Box sizes and
+# trajectories are taken from real detections (docs/counting_accuracy.md).
+
+def wander(cls, tid, cx, cy, w, h, n, amp, seed=1, axis=0, step=4.0):
+    """A stationary object whose box centre drifts within +-amp px (posture changes)."""
+    rng = random.Random(seed)
+    out, off = [], 0.0
+    for _ in range(n):
+        off = max(-amp, min(amp, off + rng.uniform(-step, step)))
+        x, y = (cx + off, cy) if axis == 0 else (cx, cy + off)
+        out.append([Detection(cls, 0.8, x - w / 2, y - h / 2, x + w / 2, y + h / 2, tid)])
+    return out
+
+
+def vertical(x=0.5):
+    return CountingLine("v", (x, 0.0), (x, 1.0), "both", True)
+
+
+WEBCAM = (1280, 720)
+
+
+def run_size(engine, frames, size):
+    events = []
+    for i, dets in enumerate(frames):
+        events.extend(engine.update(dets, size, float(i)).crossing_events)
+    return events
+
+
+def test_person_sitting_on_the_line_is_never_counted():
+    """Webcam case: a 757x427 px box straddling a vertical line whose centre drifts
+    within +-55 px for a minute (measured); used to give pairs of opposite crossings."""
+    frames = wander("person", 1, 640, 330, 757, 427, 900, 55)
+    assert run_size(CountingEngine([vertical()]), frames, WEBCAM) == []
+    # Without the travel rule the drift is counted (the bug this guards against).
+    assert len(run_size(CountingEngine([vertical()], min_travel_frac=0.0), frames, WEBCAM)) >= 1
+
+
+def test_partially_occluded_box_jumping_shape_is_not_counted():
+    """Head-only vs full-body detections move the box centre back and forth across the line."""
+    frames = []
+    for k in range(200):
+        if k % 7 < 3:
+            frames.append([Detection("person", 0.6, 560, 120, 760, 330, 1)])  # head/shoulders, centre x=660
+        else:
+            frames.append([Detection("person", 0.8, 450, 120, 780, 700, 1)])  # body, centre x=615
+    assert run_size(CountingEngine([vertical()]), frames, WEBCAM) == []
+    assert len(run_size(CountingEngine([vertical()], min_travel_frac=0.0), frames, WEBCAM)) == 2
+
+
+def test_sitting_down_close_to_the_camera_is_not_a_crossing():
+    """Real case: after walking back in, a person 450 px wide sits down; the box
+    reshapes and its centre shifts ~110 px back over the line."""
+    frames = [[box("person", 4, 963 - 30 * k, 360, size=440)] for k in range(15)]  # walks in: centre 963 -> 543
+    frames += [[Detection("person", 0.8, 318 + 8 * k, 100, 768 + 8 * k, 700, 4)] for k in range(15)]  # sits: 543 -> 655
+    ev = run_size(CountingEngine([vertical()]), frames, WEBCAM)
+    assert [e.direction for e in ev] == ["b_to_a"]  # walking in is counted, sitting down is not
+
+
+def test_standing_near_the_line_then_leaving_on_the_same_side():
+    frames = wander("person", 1, 700, 360, 300, 600, 300, 25)  # 60 px right of the line
+    frames += [[box("person", 1, 700 + 20 * k, 360, size=300)] for k in range(30)]  # walks off to the right
+    assert run_size(CountingEngine([vertical()]), frames, WEBCAM) == []
+
+
+def test_small_object_jitter_is_still_absorbed_by_the_band():
+    eng = CountingEngine([horizontal()], hysteresis_frac=0.01)
+    frames = wander("person", 1, 500, 500, 20, 40, 200, 12, axis=1, step=24)
+    assert run(eng, frames) == []
+
+
+def test_slow_crossing_with_noise_is_counted_once():
+    rng = random.Random(3)
+    frames = [[box("person", 1, 500, 380 + 0.5 * k + rng.uniform(-3, 3), size=40)] for k in range(500)]
+    ev = run(CountingEngine([horizontal()]), frames)
+    assert [e.direction for e in ev] == ["b_to_a"]
+
+
+def test_large_object_walking_slowly_across_is_counted():
+    """A person close to the camera (300 px wide) walking across at 3 px/frame."""
+    frames = [[box("person", 1, 300 + 3 * k, 360, size=300)] for k in range(230)]
+    assert len(run_size(CountingEngine([vertical()]), frames, WEBCAM)) == 1
+
+
+def test_walk_across_and_back_counts_both_directions():
+    frames = [[box("person", 1, 300 + 12 * k, 360, size=250)] for k in range(60)]  # 300 -> 1008
+    frames += [[box("person", 1, 1008 - 12 * k, 360, size=250)] for k in range(60)]  # back to 300
+    ev = run_size(CountingEngine([vertical()]), frames, WEBCAM)
+    assert [e.direction for e in ev] == ["a_to_b", "b_to_a"]  # side A is left of a top-to-bottom line
+
+
+def test_car_approaching_the_camera_is_counted():
+    """Real case (street_cebu, track 335): the box grows from 121x81 to 582x364 px
+    while its centre moves from 79 px above a horizontal line to 74 px below it."""
+    line = CountingLine("h", (0.1, 0.5), (0.9, 0.5), "both", True)
+    frames = []
+    for k in range(42):
+        h = 81 + 283 * (k / 41) ** 2
+        cy = 360 - 79 + 153 * k / 41
+        cx = 182 + 800 * k / 41
+        frames.append([Detection("car", 0.9, cx - 0.75 * h, cy - h / 2, cx + 0.75 * h, cy + h / 2, 335)])
+    ev = run_size(CountingEngine([line]), frames, WEBCAM)
+    assert [e.direction for e in ev] == ["b_to_a"]
+
+
+def test_car_driving_away_is_counted():
+    """Real case (person-bicycle-car, track 7): box height 216 -> 112 px while its
+    centre moves from +69 to -53 px across a horizontal line in a 768x432 frame."""
+    line = CountingLine("h", (0.0, 0.5), (1.0, 0.5), "both", True)
+    frames = []
+    for k in range(40):
+        h = 216 - 104 * k / 39
+        cy = 216 + 69 - 122 * min(1.0, k / 30)
+        frames.append([Detection("car", 0.9, 300, cy - h / 2, 300 + 1.3 * h, cy + h / 2, 7)])
+    ev = run_size(CountingEngine([line]), frames, (768, 432))
+    assert [e.direction for e in ev] == ["a_to_b"]
+
+
+def test_object_appearing_close_to_the_line_is_counted():
+    """Real case (person-bicycle-car, track 15): the track starts 25 px from a
+    vertical line (box 61 px wide) and rides to 72 px past it."""
+    line = CountingLine("v80", (0.8, 0.0), (0.8, 1.0), "both", True)
+    x0 = 0.8 * 768
+    frames = [[box("bicycle", 15, x0 - 25 + 4 * k, 300, size=60)] for k in range(25)]  # left (A) -> right
+    ev = run_size(CountingEngine([line]), frames, (768, 432))
+    assert [e.direction for e in ev] == ["a_to_b"]
+
+
+def test_required_travel_is_capped_for_huge_boxes():
+    """A box wider than the frame still counts after 20 % of the diagonal of travel."""
+    eng = CountingEngine([vertical()])
+    frames = [[Detection("bus", 0.9, x - 700, 100, x + 700, 600, 1)] for x in range(300, 1000, 20)]
+    assert len(run_size(eng, frames, WEBCAM)) == 1
+
+
+def test_bottom_center_anchor_uses_the_footprint():
+    """Feet crossing a floor line: travel is measured against the box's thin side, not its height."""
+    eng = CountingEngine([horizontal()], anchor="bottom_center")
+    frames = [[Detection("person", 0.9, 480, 300 + 8 * k, 520, 480 + 8 * k, 1)] for k in range(10)]  # 40x180 box
+    assert len(run(eng, frames)) == 1
+
+
+def test_track_id_switch_mid_crossing_is_missed():
+    """Known limitation: if the tracker assigns a new ID while the object is inside
+    the dead zone, the new ID has no known starting side and the crossing is missed."""
+    eng = CountingEngine([horizontal()], min_hits=1)
+    frames = path("car", 1, 500, 300, 495, 8) + path("car", 2, 500, 505, 700, 8)
+    assert run(eng, frames) == []
+
+
+def test_recorded_webcam_detections():
+    """Real detections (tests/data/webcam_straddle_detections.json): the walk out to
+    the right and the walk back in are the only crossings of the vertical line; the
+    previous rules counted 4 (two while sitting on the line, two while sitting down)."""
+    import json
+    from pathlib import Path
+
+    doc = json.loads((Path(__file__).parent / "data" / "webcam_straddle_detections.json").read_text())
+    size = tuple(doc["size"])
+    frames = [[Detection(c, 0.8, x1, y1, x2, y2, tid) for c, tid, x1, y1, x2, y2 in f] for f in doc["frames"]]
+    lines = [vertical(), CountingLine("h", (0.1, 0.5), (0.9, 0.5), "both", True)]
+    eng = CountingEngine(lines)
+    run_size(eng, frames, size)
+    assert eng.line_totals["v"] == {"a_to_b": {**eng.line_totals["v"]["a_to_b"], "person": 1},
+                                    "b_to_a": {**eng.line_totals["v"]["b_to_a"], "person": 1}}
+    assert sum(eng.line_totals["h"]["a_to_b"].values()) + sum(eng.line_totals["h"]["b_to_a"].values()) == 0
+    old = CountingEngine(lines, min_travel_frac=0.0)
+    run_size(old, frames, size)
+    assert sum(old.crossings.values()) == 4
+
+
+@pytest.mark.parametrize("kw", [{"min_travel_frac": -0.1}, {"min_travel_frac": 2.5}, {"max_travel_frac": 1.5}])
+def test_invalid_travel_settings_rejected(kw):
+    with pytest.raises(ValueError):
+        CountingEngine([horizontal()], **kw)

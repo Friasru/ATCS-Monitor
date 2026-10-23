@@ -75,9 +75,12 @@ def probe(index: int, api: int, size: tuple[int, int], seconds: float) -> dict:
     return row
 
 
-def run_pipeline(cam: CameraSource, seconds: float, device: str, line: CountingLine) -> dict:
+def run_pipeline(cam: CameraSource, seconds: float, device: str, line: CountingLine,
+                 event_log: str | None = None) -> dict:
     s = load_settings()
     s.device = device
+    if event_log:
+        s.event_log_level = event_log
     s.camera_width, s.camera_height = cam.width, cam.height
     s.lines = [line.to_dict()]
     s.validate()
@@ -182,6 +185,8 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"])
     ap.add_argument("--line", default="0.5,0.0,0.5,1.0", help="counting line x1,y1,x2,y2 (normalised); default vertical")
+    ap.add_argument("--event-log", choices=["none", "tracks", "all"], default=None,
+                    help="event detail stored in SQLite; 'all' keeps every detection so the counting can be replayed")
     ap.add_argument("--probe-only", action="store_true")
     a = ap.parse_args()
 
@@ -216,7 +221,8 @@ def main() -> int:
     x1, y1, x2, y2 = (float(v) for v in a.line.split(","))
     cam = CameraSource(index, a.width, a.height, name=name, backend=api)
     print(f"running the pipeline on '{name}' (#{index}) for {a.seconds:.0f} s ...")
-    report["pipeline"] = run_pipeline(cam, a.seconds, a.device, CountingLine("line-1", (x1, y1), (x2, y2), "both", True))
+    report["pipeline"] = run_pipeline(cam, a.seconds, a.device, CountingLine("line-1", (x1, y1), (x2, y2), "both", True),
+                                      a.event_log)
     checks = report["pipeline"].get("checks", {})
     report["result"] = "pass" if checks.get("all_ok") and not report["pipeline"]["errors"] else "fail"
     return finish(report, 0 if report["result"] == "pass" else 1)

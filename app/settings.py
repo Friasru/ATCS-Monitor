@@ -37,6 +37,7 @@ class Settings:
     min_hits: int = 3
     anchor: str = "center"
     hysteresis_frac: float = 0.01
+    min_travel_frac: float = 0.4  # travel needed to count a crossing, x object size (see counter.py)
     event_log_level: str = "tracks"
     recording_overlay: bool = True
     lines_enabled: bool = True
@@ -73,6 +74,7 @@ class Settings:
         if self.anchor not in ANCHORS:
             raise ValueError(f"anchor must be one of {ANCHORS}")
         finite("hysteresis_frac", 0.0, 0.2)
+        finite("min_travel_frac", 0.0, 2.0)
         if self.event_log_level not in LOG_LEVELS:
             raise ValueError(f"event_log_level must be one of {LOG_LEVELS}")
         ids = set()

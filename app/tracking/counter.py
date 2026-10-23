@@ -10,12 +10,30 @@ Line-crossing rules
 -------------------
 For each (track, line) pair the engine remembers the last *stable* side of the
 line and the last anchor position observed on that side. A dead zone of
-``hysteresis_px`` pixels around the line is ignored, so jitter on the line never
-flips the side. A crossing is registered only when the track reappears on the
-opposite stable side **and** the segment between the last stable position and
-the new position intersects the finite line segment (passing around the end of
-the line is not a crossing). By default each track is counted at most once per
-line per direction.
+``hysteresis_frac`` x frame diagonal around the line is ignored, so jitter on the
+line never flips the side. A crossing is registered only when the track reappears
+on the opposite stable side **and**
+
+* the segment between the last stable position and the new position intersects
+  the finite line segment (passing around the end of the line is not a crossing),
+* the anchor has travelled at least ``min_travel_frac`` (0.4) x the object's size from
+  its farthest point on the old side. The size is the box extent across the line,
+  the smaller of its value at that farthest point and now (capped at
+  ``max_travel_frac`` (0.2) x diagonal, so boxes as large as the frame stay
+  countable; a lower cap let a seated person leaning towards the webcam count).
+  Until then the old side is kept, so a slow crossing is simply counted later.
+
+The travel rule exists because the centre of a large box drifts by tens of pixels
+while the object stays put - a person sitting in front of a webcam shifts posture,
+a partly occluded box changes shape - and the fixed band turned that drift into
+pairs of opposite crossings. Taking the smaller of the two sizes keeps objects
+countable that grow quickly while approaching the camera (small at the far point)
+or shrink while driving away (small now); it is strict only for objects that are
+large throughout - the ones whose centre drifts. For
+the ``bottom_center`` anchor the size is at most the box's thinner side (its
+footprint): feet move far less than the body height. See docs/counting_accuracy.md.
+
+By default each track is counted at most once per line per direction.
 
 Side "A" is the right-hand side when walking from P1 to P2 on screen; "a_to_b"
 therefore means moving from the right-hand side to the left-hand side.
@@ -102,6 +120,8 @@ class TrackEvent:
 class _LineState:
     side: int = 0  # +1 side A, -1 side B, 0 unknown
     pos: Optional[tuple[float, float]] = None
+    far: float = 0.0  # signed distance of the farthest point seen on the current side
+    need: float = 0.0  # travel from `far` required to count a crossing
 
 
 @dataclass
@@ -118,6 +138,7 @@ class _Track:
     lines: dict = field(default_factory=dict)  # line_id -> _LineState
     counted: set = field(default_factory=set)  # {(line_id, direction)}
     pending: list = field(default_factory=list)  # crossings awaiting confirmation
+    size: Optional[tuple[float, float]] = None  # smoothed box (width, height)
 
     @property
     def label(self) -> str:
@@ -142,15 +163,23 @@ class CountingEngine:
         anchor: str = "center",
         max_age_frames: int = 300,
         enabled_classes: Optional[Iterable[str]] = None,
+        min_travel_frac: float = 0.4,
+        max_travel_frac: float = 0.2,
     ) -> None:
         if min_hits < 1:
             raise ValueError("min_hits must be >= 1")
         if not 0.0 <= hysteresis_frac < 0.25:
             raise ValueError("hysteresis_frac must be in [0, 0.25)")
+        if not 0.0 <= min_travel_frac <= 2.0:
+            raise ValueError("min_travel_frac must be in [0, 2]")
+        if not 0.0 <= max_travel_frac <= 1.0:
+            raise ValueError("max_travel_frac must be in [0, 1]")
         if anchor not in ANCHORS:
             raise ValueError(f"Unknown anchor '{anchor}'")
         self.min_hits = min_hits
         self.hysteresis_frac = hysteresis_frac
+        self.min_travel_frac = min_travel_frac
+        self.max_travel_frac = max_travel_frac
         self.anchor = anchor
         self.max_age_frames = max_age_frames
         self.enabled_classes = set(enabled_classes) if enabled_classes is not None else set(MONITORED_CLASSES)
@@ -221,7 +250,9 @@ class CountingEngine:
         width, height = frame_size
         self.frame_index += 1
         self._frames_since_reset += 1
-        tol = self.hysteresis_frac * math.hypot(width, height)
+        diag = math.hypot(width, height)
+        tol = self.hysteresis_frac * diag
+        max_need = self.max_travel_frac * diag
         crossing_events: list[CrossingEvent] = []
         track_events: list[TrackEvent] = []
         visible = zero_counts()
@@ -247,6 +278,8 @@ class CountingEngine:
             t.votes[det.cls] += 1
             t.confidence = det.confidence
             t.bbox = (det.x1, det.y1, det.x2, det.y2)
+            w, h = det.x2 - det.x1, det.y2 - det.y1
+            t.size = (w, h) if t.size is None else (0.8 * t.size[0] + 0.2 * w, 0.8 * t.size[1] + 0.2 * h)
 
             if not t.confirmed and t.hits >= self.min_hits:
                 t.confirmed = True
@@ -260,7 +293,8 @@ class CountingEngine:
             for line in self.lines.values():
                 if not line.enabled:
                     continue
-                direction = self._check_line(t, line, pos, width, height, tol)
+                need = min(self.min_travel_frac * self._extent(t, line, width, height), max_need)
+                direction = self._check_line(t, line, pos, width, height, tol, need)
                 if direction is None:
                     continue
                 if line.direction != "both" and line.direction != direction:
@@ -292,8 +326,19 @@ class CountingEngine:
         self.line_totals[line_id][direction][cls] += 1
         return CrossingEvent(timestamp, line_id, t.track_id, cls, direction)
 
+    def _extent(self, t: _Track, line: CountingLine, width: int, height: int) -> float:
+        """The object's (smoothed) box size across the line, in pixels."""
+        if t.size is None:
+            return 0.0
+        (ax, ay), (bx, by) = line.pixels(width, height)
+        length = math.hypot(bx - ax, by - ay) or 1.0
+        extent = abs(t.size[0] * (by - ay) / length) + abs(t.size[1] * (bx - ax) / length)
+        if self.anchor == "bottom_center":
+            extent = min(extent, *t.size)  # footprint: feet move far less than the body height
+        return extent
+
     @staticmethod
-    def _check_line(t: _Track, line: CountingLine, pos, width, height, tol) -> Optional[str]:
+    def _check_line(t: _Track, line: CountingLine, pos, width, height, tol, need) -> Optional[str]:
         a, b = line.pixels(width, height)
         d = signed_distance(pos, a, b)
         st = t.lines.get(line.line_id)
@@ -303,14 +348,18 @@ class CountingEngine:
             return None  # inside the hysteresis band: no decision
         side = 1 if d > 0 else -1
         if st.side == 0 or side == st.side:
+            if st.side == 0 or abs(d) > abs(st.far):
+                st.far, st.need = d, need
             st.side, st.pos = side, pos
             return None
         assert st.pos is not None
-        crossed = segments_intersect(st.pos, pos, a, b)
-        prev = st.side
-        st.side, st.pos = side, pos
-        if not crossed:
+        if not segments_intersect(st.pos, pos, a, b):
+            st.side, st.pos, st.far, st.need = side, pos, d, need
             return None  # went around the end of the line
+        if abs(d - st.far) < min(st.need, need):
+            return None  # not enough travel yet (drift): keep the old side
+        prev = st.side
+        st.side, st.pos, st.far, st.need = side, pos, d, need
         return "a_to_b" if prev == 1 else "b_to_a"
 
     def finalize(self, timestamp: float) -> list[TrackEvent]:
