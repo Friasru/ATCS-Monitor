@@ -1,4 +1,9 @@
-"""Frame sources: physical cameras (V4L2 on Linux) and local video files."""
+"""Frame sources: physical cameras and local video files.
+
+Camera capture APIs: V4L2 on Linux; DirectShow, then Media Foundation on Windows;
+AVFoundation on macOS. ATCS_CAMERA_BACKEND (v4l2, dshow, msmf, avfoundation, any)
+forces a single API.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import cv2
-import numpy as np
+# Media Foundation otherwise spends several seconds per open setting up hardware
+# transforms. Read by OpenCV on first MSMF use, so it must be set before that.
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +37,7 @@ class SourceError(RuntimeError):
 class CameraInfo:
     index: int
     name: str
+    backend: int = cv2.CAP_ANY  # capture API that delivered a frame during discovery
 
     @property
     def label(self) -> str:
@@ -42,18 +52,73 @@ class Frame:
     media_time: float  # seconds on the source timeline (file position or monotonic for cameras)
 
 
-def _backend() -> int:
+BACKENDS: dict[str, int] = {
+    "v4l2": cv2.CAP_V4L2,
+    "dshow": cv2.CAP_DSHOW,
+    "msmf": cv2.CAP_MSMF,
+    "avfoundation": cv2.CAP_AVFOUNDATION,
+    "any": cv2.CAP_ANY,
+}
+
+
+def backend_name(api: int) -> str:
+    return next((k for k, v in BACKENDS.items() if v == api), str(api))
+
+
+def _has_backend(api: int) -> bool:
+    """Whether this OpenCV build can use the API (built in, or a loadable plugin)."""
+    try:
+        return bool(cv2.videoio_registry.hasBackend(api))
+    except (AttributeError, cv2.error):
+        return True  # cannot tell; let open() decide
+
+
+def camera_backends() -> list[int]:
+    """Capture APIs to try, in order of preference."""
+    forced = os.environ.get("ATCS_CAMERA_BACKEND", "").strip().lower()
+    if forced:
+        if forced in BACKENDS:
+            if not _has_backend(BACKENDS[forced]):
+                log.warning("ATCS_CAMERA_BACKEND=%s is not available in this OpenCV build", forced)
+            return [BACKENDS[forced]]
+        log.warning("Ignoring unknown ATCS_CAMERA_BACKEND=%r (use one of %s)", forced, ", ".join(BACKENDS))
     if sys.platform.startswith("linux"):
-        return cv2.CAP_V4L2
+        return [cv2.CAP_V4L2]
     if sys.platform == "win32":
-        return cv2.CAP_DSHOW
-    return cv2.CAP_ANY
+        # DirectShow opens quickly and its device order matches the names below;
+        # Media Foundation covers cameras that only ship an MF driver. The
+        # opencv-python 5.0 wheels are built without MSMF, so it is skipped there.
+        return [b for b in (cv2.CAP_DSHOW, cv2.CAP_MSMF) if _has_backend(b)] or [cv2.CAP_ANY]
+    if sys.platform == "darwin":
+        return [cv2.CAP_AVFOUNDATION]
+    return [cv2.CAP_ANY]
+
+
+def _windows_camera_names() -> list[str]:
+    """DirectShow video input names, in the same order as CAP_DSHOW indices."""
+    try:
+        import comtypes
+        from pygrabber.dshow_graph import FilterGraph
+    except ImportError:
+        return []
+    initialized = False
+    try:
+        comtypes.CoInitialize()  # discovery runs on a worker thread
+        initialized = True
+        return [str(n) for n in FilterGraph().get_input_devices()]
+    except Exception as exc:
+        log.info("DirectShow device names unavailable (%s); using generic names", exc)
+        return []
+    finally:
+        if initialized:
+            comtypes.CoUninitialize()
 
 
 def discover_cameras(max_index: int = 10) -> list[CameraInfo]:
     """List usable cameras. Never assumes index 0 exists."""
     found: list[CameraInfo] = []
-    if sys.platform.startswith("linux"):
+    backends = camera_backends()
+    if sys.platform.startswith("linux") and backends == [cv2.CAP_V4L2]:
         nodes = sorted(glob.glob("/dev/video*"), key=lambda p: int(re.sub(r"\D", "", p) or 0))
         for node in nodes:
             idx = int(re.sub(r"\D", "", node) or 0)
@@ -65,17 +130,26 @@ def discover_cameras(max_index: int = 10) -> list[CameraInfo]:
                 name = f"Camera {idx}"
             # Many webcams expose a metadata node next to the capture node;
             # only keep nodes that actually deliver a frame.
-            if _probe(idx):
-                found.append(CameraInfo(idx, name))
+            if _probe(idx, cv2.CAP_V4L2):
+                found.append(CameraInfo(idx, name, cv2.CAP_V4L2))
         return found
-    for idx in range(max_index):
-        if _probe(idx):
-            found.append(CameraInfo(idx, f"Camera {idx}"))
+    names = _windows_camera_names() if sys.platform == "win32" else []
+    for api in backends:
+        # With DirectShow names the device count is known; otherwise scan indices.
+        count = len(names) if names and api == cv2.CAP_DSHOW else max_index
+        for idx in range(count):
+            if _probe(idx, api):
+                name = names[idx] if idx < len(names) else f"Camera {idx}"
+                found.append(CameraInfo(idx, name, api))
+        if found:
+            break  # one API is enough; the next would list the same devices again
+    log.info("Camera discovery (%s): %s", "/".join(backend_name(b) for b in backends),
+             [f"{c.label} via {backend_name(c.backend)}" for c in found] or "none")
     return found
 
 
-def _probe(index: int) -> bool:
-    cap = cv2.VideoCapture(index, _backend())
+def _probe(index: int, api: int) -> bool:
+    cap = cv2.VideoCapture(index, api)
     try:
         if not cap.isOpened():
             return False
@@ -119,10 +193,14 @@ class CameraSource(FrameSource):
     kind = "camera"
     lossless = False
 
-    def __init__(self, index: int, width: int = 640, height: int = 480, name: str = "", max_failures: int = 30):
+    def __init__(self, index: int, width: int = 640, height: int = 480, name: str = "", max_failures: int = 30,
+                 backend: Optional[int] = None):
         if not isinstance(index, int) or index < 0:
             raise SourceError(f"Invalid camera index: {index!r}")
         self.index = index
+        #: Capture API to use; None tries camera_backends() in order. Set to the
+        #: working API after open() so reconnects use the same one.
+        self.backend = backend
         self.width = width
         self.height = height
         self.name = name or f"Camera {index}"
@@ -148,19 +226,30 @@ class CameraSource(FrameSource):
     def open(self) -> None:
         if sys.platform.startswith("linux") and not os.path.exists(f"/dev/video{self.index}"):
             raise SourceError(f"Camera #{self.index} does not exist (no /dev/video{self.index})")
-        cap = cv2.VideoCapture(self.index, _backend())
-        if not cap.isOpened():
-            cap.release()
-            raise SourceError(f"Camera #{self.index} could not be opened (in use by another program or no permission?)")
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        ok, img = cap.read()
-        if not ok or img is None:
-            cap.release()
-            raise SourceError(f"Camera #{self.index} opened but delivers no frames (busy or unsupported format)")
+        err = ""
+        for api in [self.backend] if self.backend is not None else camera_backends():
+            cap = cv2.VideoCapture(self.index, api)
+            if not cap.isOpened():
+                cap.release()
+                err = err or f"Camera #{self.index} could not be opened (in use by another program or no permission?)"
+                continue
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            ok, img = cap.read()
+            if not ok or img is None:
+                cap.release()
+                err = f"Camera #{self.index} opened but delivers no frames (busy or unsupported format)"
+                continue
+            self.backend = api
+            break
+        else:
+            raise SourceError(err)
+        log.info("Camera #%d '%s' opened via %s at %dx%d", self.index, self.name, backend_name(api),
+                 img.shape[1], img.shape[0])
         self._cap = cap
-        self._fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        self._fps = fps if 0.0 < fps <= 240.0 else 0.0  # DirectShow reports -1 (unknown)
         self._count = 0
         self._t0 = time.monotonic()
         self._first = img

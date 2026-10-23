@@ -1,5 +1,7 @@
 # PyInstaller spec for ATCS Monitor (one-folder build).
-# Build with: ./scripts/build.sh
+# Build with: ./scripts/build.sh (Linux) or scripts\build.ps1 (Windows)
+import sys
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = SPECPATH + "/.."
@@ -7,6 +9,10 @@ ROOT = SPECPATH + "/.."
 datas = collect_data_files("ultralytics")  # tracker/model yaml configs, assets
 
 hiddenimports = collect_submodules("ultralytics.trackers") + ["lap"]
+if sys.platform == "win32":
+    # DirectShow camera names: bundle the comtypes wrappers that build.ps1 generates
+    # beforehand, so the frozen app never writes them to %TEMP% at runtime.
+    hiddenimports += collect_submodules("pygrabber") + collect_submodules("comtypes.gen")
 
 a = Analysis(
     [ROOT + "/app/main.py"],

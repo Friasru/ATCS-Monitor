@@ -48,5 +48,8 @@ def model_home(home):
     require_model()
     (home / "models").mkdir(exist_ok=True)
     for w in MODELS.glob("*.pt"):
-        (home / "models" / w.name).symlink_to(w)
+        try:
+            (home / "models" / w.name).symlink_to(w)
+        except OSError:  # Windows without Developer Mode cannot create symlinks
+            os.link(w, home / "models" / w.name)
     return home

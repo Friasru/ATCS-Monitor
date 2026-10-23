@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
         for cam in cams:
-            self.source_combo.addItem(f"Camera: {cam.label}", ("camera", cam.index, cam.name))
+            self.source_combo.addItem(f"Camera: {cam.label}", ("camera", cam.index, cam.name, cam.backend))
         if not cams:
             self.source_combo.addItem("No camera detected", None)
         for f in files:
@@ -270,7 +270,8 @@ class MainWindow(QMainWindow):
         if not data:
             return None
         if data[0] == "camera":
-            return CameraSource(int(data[1]), self.settings.camera_width, self.settings.camera_height, name=data[2])
+            return CameraSource(int(data[1]), self.settings.camera_width, self.settings.camera_height, name=data[2],
+                                backend=data[3])
         return VideoFileSource(data[1], realtime=True)
 
     # ============================================================ actions

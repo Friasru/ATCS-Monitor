@@ -91,11 +91,13 @@ def test_camera_discovery_lists_sources(window):
 
 
 def test_start_without_source_is_blocked(window, boxes):
+    # Force "no source" even on machines where discovery found a real camera.
+    window.source_combo.clear()
+    window.source_combo.addItem("No camera detected", None)
     window.start_btn.setEnabled(True)
     window.start_monitoring()
-    if window.source_combo.currentData() is None:
-        assert boxes and boxes[-1][0] == "info"
-        assert not window.engine.is_running
+    assert boxes and boxes[-1][0] == "info"
+    assert not window.engine.is_running
 
 
 def test_missing_model_offers_download(window, monkeypatch, tmp_path):

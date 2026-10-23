@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -35,12 +36,19 @@ def setup_logging(verbose: bool = False) -> Path:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="atcs-monitor", description=f"{APP_NAME} {__version__}")
     ap.add_argument("--video", help="pre-select a video file as source")
+    ap.add_argument("--camera", type=int, metavar="INDEX", help="pre-select the discovered camera with this index")
     ap.add_argument("--start", action="store_true", help="start monitoring immediately")
     ap.add_argument("--record", action="store_true", help="with --start: begin recording as soon as detection runs")
     ap.add_argument("--quit-after", type=int, default=0, metavar="MS",
                     help="close the window after MS milliseconds (launch checks)")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
+
+    # A windowed (console=False) Windows build has no stdout/stderr; libraries that
+    # write progress there (tqdm, print) would otherwise raise.
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
 
     paths.configure_third_party_dirs()
     log_file = setup_logging(args.verbose)
@@ -74,20 +82,41 @@ def main(argv: list[str] | None = None) -> int:
 
     win = MainWindow(load_settings(), repo)
     win.show()
+
+    def start_selected():
+        QTimer.singleShot(300, win.start_monitoring)
+        if args.record:
+            from app.services.monitoring import State
+
+            def record_when_ready():
+                if win.state == State.DETECTING:
+                    win.start_recording()
+                elif win.state in (State.INITIALIZING, State.IDLE):
+                    QTimer.singleShot(200, record_when_ready)
+
+            QTimer.singleShot(500, record_when_ready)
+
+    def select_camera_when_discovered():
+        if win._discovering:
+            QTimer.singleShot(200, select_camera_when_discovered)
+            return
+        combo = win.source_combo
+        idx = next((i for i in range(combo.count()) if (combo.itemData(i) or ("",))[0] == "camera"
+                    and combo.itemData(i)[1] == args.camera), -1)
+        if idx < 0:
+            log.error("--camera %d: no such camera was discovered", args.camera)
+            win.statusBar().showMessage(f"Camera #{args.camera} was not found", 10000)
+            return
+        combo.setCurrentIndex(idx)
+        if args.start:
+            start_selected()
+
     if args.video:
         win.add_video_source(args.video)
         if args.start:
-            QTimer.singleShot(300, win.start_monitoring)
-            if args.record:
-                from app.services.monitoring import State
-
-                def record_when_ready():
-                    if win.state == State.DETECTING:
-                        win.start_recording()
-                    elif win.state in (State.INITIALIZING, State.IDLE):
-                        QTimer.singleShot(200, record_when_ready)
-
-                QTimer.singleShot(500, record_when_ready)
+            start_selected()
+    elif args.camera is not None:
+        QTimer.singleShot(0, select_camera_when_discovered)
     if args.quit_after > 0:
         QTimer.singleShot(args.quit_after, win.close)
     rc = app.exec()

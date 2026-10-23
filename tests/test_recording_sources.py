@@ -1,12 +1,15 @@
 """Recorder lifecycle/validation and frame sources (synthetic video files)."""
 
+import sys
 from datetime import datetime
 
 import cv2
 import numpy as np
 import pytest
 
-from app.camera.sources import CameraSource, SourceError, VideoFileSource, discover_cameras
+from app.camera import sources
+from app.camera.sources import (CameraInfo, CameraSource, SourceError, VideoFileSource, backend_name, camera_backends,
+                                discover_cameras)
 from app.recording import recorder as rec_mod
 from app.recording.recorder import RecordingError, VideoRecorder, unique_recording_path, validate_video
 
@@ -175,3 +178,79 @@ def test_invalid_camera_index():
 def test_discover_cameras_returns_list():
     cams = discover_cameras()
     assert isinstance(cams, list)  # empty when no camera is attached (e.g. WSL2)
+
+
+def test_camera_backend_order_per_platform(monkeypatch):
+    monkeypatch.delenv("ATCS_CAMERA_BACKEND", raising=False)
+    monkeypatch.setattr(sources, "_has_backend", lambda api: True)
+    for plat, expected in (("linux", [cv2.CAP_V4L2]), ("win32", [cv2.CAP_DSHOW, cv2.CAP_MSMF]),
+                           ("darwin", [cv2.CAP_AVFOUNDATION]), ("freebsd14", [cv2.CAP_ANY])):
+        monkeypatch.setattr(sys, "platform", plat)
+        assert camera_backends() == expected
+
+
+def test_camera_backend_override(monkeypatch):
+    monkeypatch.setenv("ATCS_CAMERA_BACKEND", "MSMF")
+    assert camera_backends() == [cv2.CAP_MSMF]
+    monkeypatch.setenv("ATCS_CAMERA_BACKEND", "bogus")  # ignored with a warning
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sources, "_has_backend", lambda api: True)
+    assert camera_backends() == [cv2.CAP_DSHOW, cv2.CAP_MSMF]
+    assert backend_name(cv2.CAP_DSHOW) == "dshow"
+
+
+def test_windows_skips_backends_missing_from_the_opencv_build(monkeypatch):
+    monkeypatch.delenv("ATCS_CAMERA_BACKEND", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sources, "_has_backend", lambda api: api != cv2.CAP_MSMF)
+    assert camera_backends() == [cv2.CAP_DSHOW]
+    monkeypatch.setattr(sources, "_has_backend", lambda api: False)
+    assert camera_backends() == [cv2.CAP_ANY]
+
+
+def test_windows_discovery_uses_directshow_names_then_msmf_fallback(monkeypatch):
+    """Simulated Windows: DirectShow sees nothing, Media Foundation finds index 0."""
+    monkeypatch.delenv("ATCS_CAMERA_BACKEND", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sources, "_has_backend", lambda api: True)
+    monkeypatch.setattr(sources, "_windows_camera_names", lambda: ["Integrated Camera"])
+    probed = []
+
+    def fake_probe(idx, api):
+        probed.append((idx, api))
+        return api == cv2.CAP_MSMF and idx == 0
+
+    monkeypatch.setattr(sources, "_probe", fake_probe)
+    cams = discover_cameras(max_index=3)
+    assert cams == [CameraInfo(0, "Integrated Camera", cv2.CAP_MSMF)]
+    assert probed == [(0, cv2.CAP_DSHOW), (0, cv2.CAP_MSMF), (1, cv2.CAP_MSMF), (2, cv2.CAP_MSMF)]
+
+
+def test_camera_unknown_fps_is_reported_as_zero(monkeypatch):
+    """DirectShow returns CAP_PROP_FPS == -1; that must not reach the recorder as a frame rate."""
+
+    class FakeCap:
+        def __init__(self, *a):
+            pass
+
+        def isOpened(self):
+            return True
+
+        def set(self, *a):
+            return True
+
+        def read(self):
+            return True, np.zeros((48, 64, 3), np.uint8)
+
+        def get(self, prop):
+            return -1.0
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(sources.cv2, "VideoCapture", FakeCap)
+    monkeypatch.setattr(sys, "platform", "win32")
+    src = CameraSource(0, backend=cv2.CAP_DSHOW)
+    src.open()
+    assert src.fps == 0.0 and src.read() is not None
+    src.close()

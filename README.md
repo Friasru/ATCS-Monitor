@@ -36,11 +36,11 @@ does not talk to the ATCS backend.
 
 | | |
 |---|---|
-| OS | Linux (tested on Ubuntu 24.04 under WSL2 with WSLg). The code also contains Windows/macOS camera back-ends, but those are **untested**. |
-| Python | 3.10+ (tested with 3.12.3) |
+| OS | Linux (tested on Ubuntu 24.04 under WSL2 with WSLg) and **native Windows 10/11 x64** (see [docs/windows.md](docs/windows.md)). macOS camera code exists but is untested. |
+| Python | 3.10+ (tested with 3.12.3 on Linux, 3.14.7 on Windows) |
 | GPU | Optional. NVIDIA + CUDA 12.8 build of PyTorch is used automatically when available (tested: RTX 5060 Laptop). The app runs on CPU without a GPU. |
 | Disk | The `.venv` is 7.4 GB with the CUDA build of PyTorch (much smaller with `--cpu`). Recordings (mp4v) take about 54 MB per minute at 1280×720 / 15 FPS. |
-| Display | X11 or Wayland session |
+| Display | X11 or Wayland session on Linux; any Windows desktop |
 
 ## Installation
 
@@ -56,6 +56,10 @@ cd ATCS-Monitor
 `setup.sh` creates `.venv`, installs `requirements-dev.txt`, replaces `opencv-python` with
 `opencv-python-headless` (the non-headless wheel ships Qt plugins that clash with PySide6), and
 downloads the default model weights.
+
+**Windows:** run `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1` in PowerShell. It creates a
+separate `.venv-win`, so it never touches the Linux `.venv`. Start the app with `.\start.cmd`. Full guide
+(webcam validation, tests, `.exe` build): [docs/windows.md](docs/windows.md).
 
 ### Model setup
 
@@ -107,8 +111,10 @@ A packaged build (see [Packaging](#packaging)) is started with `dist/atcs-monito
 *(The numbers in this layout sketch are illustrative, not measurements.)*
 
 ### Webcam
-1. Plug in the camera and press **Find Cameras**. Cameras are found by probing `/dev/video*`, keeping
-   only nodes that actually deliver a frame. Index 0 is never assumed to exist.
+1. Plug in the camera and press **Find Cameras**. On Linux, cameras are found by probing `/dev/video*`, keeping
+   only nodes that actually deliver a frame. On Windows, the DirectShow devices are probed (with their real
+   names), and Media Foundation is used as a fallback. `ATCS_CAMERA_BACKEND=dshow|msmf|v4l2|any` forces an API.
+   Index 0 is never assumed to exist.
 2. Pick it in **Source** and press **Start**. The model loads on first start, which takes a few seconds.
 3. Camera resolution is set in **Settings** (640×480, 1280×720 or 1920×1080).
 
@@ -287,8 +293,10 @@ Main limitations:
 | `test_gui.py` | pytest-qt: launch, controls, line dragging, settings validation, error dialogs, rapid clicks, UI responsiveness during inference, recording, history, player, export, close while recording |
 
 Tests that need weights or videos are skipped, with the reason, when those files are missing.
-GUI tests use Qt's offscreen platform. A physical-webcam test is not automated. To verify a
-camera manually: Start → Record → End Recording → Stop, then check History (the recording is decoded and validated
+GUI tests use Qt's offscreen platform. Physical-camera tests (`tests/test_camera_hw.py`) are opt-in:
+set `ATCS_TEST_CAMERA=1` to run them. `scripts/camera_check.py` validates a webcam end to end (discovery,
+backend/resolution probe, then detection, tracking, counting, recording, SQLite and exports) and writes a
+JSON report to `data/camera_check/`. To verify a camera manually in the GUI: Start → Record → End Recording → Stop, then check History (the recording is decoded and validated
 automatically) and confirm the camera LED turns off.
 
 ## Packaging
@@ -308,13 +316,15 @@ Verified for the packaged build: it was launched from `/tmp` with
 saved a recording that was validated (224 frames, 14.9 s, first and last frames decodable), stored the session
 in its own `data/` folder, and exited with code 0.
 
-Extra command-line options: `--video FILE`, `--start`, `--record` (with `--start`), `--quit-after MS`, `--verbose`.
+**Windows:** `scripts\build.ps1` builds `dist\windows\atcs-monitor\atcs-monitor.exe` (4.48 GB with CUDA). It was validated on the built-in webcam and on a video file; see [docs/windows.md](docs/windows.md#8-build-the-windows-executable).
+
+Extra command-line options: `--video FILE`, `--camera INDEX`, `--start`, `--record` (with `--start`), `--quit-after MS`, `--verbose`.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| "No camera detected" | Check `ls /dev/video*` and that your user is in the `video` group. On WSL2, USB cameras need `usbipd` passthrough. |
+| "No camera detected" | Check `ls /dev/video*` and that your user is in the `video` group. On WSL2, USB cameras need `usbipd` passthrough (or run natively on Windows). On Windows, see [docs/windows.md](docs/windows.md#10-troubleshooting). |
 | "Camera #N could not be opened" | Another program is using the camera, or permission is missing. |
 | "opened but delivers no frames" | Try another resolution in Settings; some cameras only support specific modes. |
 | "Model weights not found" | `.venv/bin/python scripts/download_model.py` |
@@ -352,7 +362,7 @@ app/
   main.py               entry point: logging, crash hook, interrupted-session recovery
   paths.py              project-local paths (also when frozen)
   settings.py           validated settings <-> data/settings.json
-  camera/sources.py     CameraSource (V4L2), VideoFileSource, discovery
+  camera/sources.py     CameraSource (V4L2 / DirectShow + Media Foundation / AVFoundation), VideoFileSource, discovery
   camera/manager.py     capture thread, bounded FrameBuffer (latest-only / lossless), RateMeter
   detection/            classes.py (class mapping, colours), detector.py (YOLO + ByteTrack), types.py
   tracking/             geometry.py (segment tests), counter.py (visible/unique/crossings)
