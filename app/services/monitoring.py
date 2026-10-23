@@ -238,10 +238,11 @@ class MonitoringEngine:
             infer_time = 0.0
             consecutive_failures = 0
             recording_seconds = 0.0
+            imgsz = s.effective_imgsz(detector.device)
             min_interval = 1.0 / s.max_processing_fps if s.max_processing_fps > 0 else 0.0
             last_proc = 0.0
             reconnects = 0
-            self._set_state(State.DETECTING, f"Detecting on {source.identifier}")
+            self._set_state(State.DETECTING, f"Detecting on {source.identifier} ({detector.device}, {imgsz} px)")
 
             while not self._stop.is_set():
                 # ---- requests from the UI ---------------------------------
@@ -307,7 +308,7 @@ class MonitoringEngine:
                 # ---- inference ------------------------------------------------
                 t0 = time.perf_counter()
                 try:
-                    dets = detector.track(frame.image, conf=live.confidence, iou=live.iou, imgsz=s.imgsz,
+                    dets = detector.track(frame.image, conf=live.confidence, iou=live.iou, imgsz=imgsz,
                                           classes=live.enabled_classes)
                     consecutive_failures = 0
                 except Exception as exc:

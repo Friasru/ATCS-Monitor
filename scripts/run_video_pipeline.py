@@ -105,7 +105,7 @@ def main() -> int:
     s.device = a.device
     if a.model:
         s.model_name = a.model
-    if a.imgsz:
+    if a.imgsz is not None:
         s.imgsz = a.imgsz
     if a.conf:
         s.confidence = a.conf

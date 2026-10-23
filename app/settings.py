@@ -27,7 +27,7 @@ class Settings:
     model_name: str = "yolo26n.pt"
     confidence: float = 0.35
     iou: float = 0.5
-    imgsz: int = 640
+    imgsz: int = 0  # 0 = auto: 960 on GPU, 640 on CPU (see effective_imgsz)
     max_processing_fps: float = 15.0  # 0 = unlimited
     device: str = "auto"
     tracker: str = "bytetrack"
@@ -52,8 +52,9 @@ class Settings:
             raise ValueError("model_name must be a bare .pt/.onnx file name inside models/")
         finite("confidence", 0.01, 0.99)
         finite("iou", 0.1, 0.95)
-        if not isinstance(self.imgsz, int) or self.imgsz < 160 or self.imgsz > 1920 or self.imgsz % 32:
-            raise ValueError("imgsz must be a multiple of 32 between 160 and 1920")
+        if (not isinstance(self.imgsz, int) or isinstance(self.imgsz, bool)
+                or (self.imgsz != 0 and (self.imgsz < 160 or self.imgsz > 1920 or self.imgsz % 32))):
+            raise ValueError("imgsz must be 0 (auto) or a multiple of 32 between 160 and 1920")
         finite("max_processing_fps", 0, 120)
         if self.device not in DEVICES:
             raise ValueError(f"device must be one of {DEVICES}")
@@ -80,6 +81,13 @@ class Settings:
             if ln.line_id in ids:
                 raise ValueError(f"Duplicate line id {ln.line_id}")
             ids.add(ln.line_id)
+
+    def effective_imgsz(self, device: str) -> int:
+        """Auto size: 960 px finds small/distant objects much better (measured in
+        docs/performance.md) and is cheap on a GPU; 640 px keeps CPUs real-time."""
+        if self.imgsz:
+            return self.imgsz
+        return 960 if device.startswith("cuda") else 640
 
     def counting_lines(self) -> list[CountingLine]:
         return [CountingLine.from_dict(d) for d in self.lines]

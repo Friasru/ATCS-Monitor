@@ -200,3 +200,26 @@ def test_convert_without_track_ids_and_empty():
 
 def test_monitored_classes_are_the_six_required():
     assert set(MONITORED_CLASSES) == {"person", "car", "motorcycle", "bicycle", "bus", "truck"}
+
+
+def test_auto_inference_size_depends_on_device():
+    s = Settings()
+    assert s.imgsz == 0
+    assert s.effective_imgsz("cuda:0") == 960 and s.effective_imgsz("cpu") == 640
+    s.imgsz = 480
+    assert s.effective_imgsz("cuda:0") == 480
+    s.validate()
+
+
+def test_tracked_filter_keeps_established_tracks_through_low_scores():
+    from app.detection.types import Detection
+
+    d = make_detector()
+    low = Detection("car", 0.15, 0, 0, 10, 10, 7)
+    high = Detection("car", 0.6, 0, 0, 10, 10, 7)
+    assert d.filter_tracked([low], 0.35) == []  # never reached the threshold: hidden
+    assert d.filter_tracked([high], 0.35) == [high]
+    assert d.filter_tracked([low], 0.35) == [low]  # same track, now kept alive
+    assert d.filter_tracked([Detection("car", 0.2, 0, 0, 5, 5, None)], 0.35) == []
+    d._established.clear()
+    assert d.filter_tracked([low], 0.35) == []

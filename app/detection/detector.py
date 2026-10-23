@@ -17,6 +17,11 @@ from app.detection.types import Detection
 log = logging.getLogger(__name__)
 
 TRACKER_CONFIGS = {"bytetrack": "bytetrack.yaml", "botsort": "botsort.yaml"}
+# Ultralytics applies `conf` before the tracker. ByteTrack's second association
+# stage needs the low-score boxes (track_low_thresh = 0.1 in bytetrack.yaml) to
+# keep tracks alive through blur/occlusion, so the model runs at this floor and
+# the user's threshold is applied afterwards (see Detector.track).
+TRACKER_CONF_FLOOR = 0.1
 
 
 class ModelError(RuntimeError):
@@ -77,6 +82,7 @@ class Detector:
         self.id_to_class: dict[int, str] = {}
         self.version = ""
         self.inference_failures = 0
+        self._established: set[int] = set()  # track ids that reached the user threshold once
         self._lock = threading.Lock()
 
     @property
@@ -135,6 +141,7 @@ class Detector:
         # tracker type change is also honoured.
         if predictor is not None:
             self.model.predictor = None
+        self._established.clear()
 
     def track(self, image: np.ndarray, conf: float, iou: float, imgsz: int,
               classes: Optional[list[str]] = None) -> list[Detection]:
@@ -148,7 +155,7 @@ class Detector:
             image,
             persist=True,
             tracker=TRACKER_CONFIGS.get(self.tracker, "bytetrack.yaml"),
-            conf=conf,
+            conf=min(conf, TRACKER_CONF_FLOOR),
             iou=iou,
             imgsz=imgsz,
             classes=ids,
@@ -156,7 +163,24 @@ class Detector:
             quantize=16 if self.half else None,
             verbose=False,
         )
-        return self.convert(results[0], image.shape[1], image.shape[0])
+        return self.filter_tracked(self.convert(results[0], image.shape[1], image.shape[0]), conf)
+
+    def filter_tracked(self, dets: list[Detection], conf: float) -> list[Detection]:
+        """Apply the user's confidence threshold to tracker output.
+
+        A track becomes visible once one of its detections reaches ``conf``;
+        afterwards it stays visible while the tracker keeps it alive with
+        lower-scoring boxes. Untracked boxes must always reach ``conf``.
+        """
+        out = []
+        for d in dets:
+            if d.confidence >= conf:
+                if d.track_id is not None:
+                    self._established.add(d.track_id)
+                out.append(d)
+            elif d.track_id is not None and d.track_id in self._established:
+                out.append(d)
+        return out
 
     def detect(self, image: np.ndarray, conf: float, iou: float, imgsz: int) -> list[Detection]:
         """Detection only (no tracking) - used by validation scripts/tests."""

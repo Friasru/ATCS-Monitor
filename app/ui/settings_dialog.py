@@ -41,8 +41,10 @@ class SettingsDialog(QDialog):
         form.addRow("NMS IoU", self.iou)
 
         self.imgsz = QComboBox()
-        self.imgsz.addItems([str(v) for v in IMGSZ_CHOICES])
-        self.imgsz.setCurrentText(str(settings.imgsz))
+        self.imgsz.addItem("Auto (960 on GPU, 640 on CPU)", 0)
+        for v in IMGSZ_CHOICES:
+            self.imgsz.addItem(str(v), v)
+        self.imgsz.setCurrentIndex(max(0, self.imgsz.findData(settings.imgsz)))
         form.addRow("Inference size (px)", self.imgsz)
 
         self.max_fps = QDoubleSpinBox(decimals=0, minimum=0, maximum=120, value=settings.max_processing_fps)
@@ -112,7 +114,7 @@ class SettingsDialog(QDialog):
         s.device = DEVICES[self.device.currentIndex()]
         s.confidence = round(self.conf.value(), 2)
         s.iou = round(self.iou.value(), 2)
-        s.imgsz = int(self.imgsz.currentText())
+        s.imgsz = int(self.imgsz.currentData())
         s.max_processing_fps = float(self.max_fps.value())
         w, h = (int(v) for v in self.resolution.currentText().split(" x "))
         s.camera_width, s.camera_height = w, h

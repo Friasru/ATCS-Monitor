@@ -212,6 +212,7 @@ class VideoRecorder:
         res = self.result
         t0: Optional[float] = None
         last: Optional[np.ndarray] = None
+        next_disk_check = 100
         try:
             while True:
                 item = self._q.get()
@@ -235,7 +236,9 @@ class VideoRecorder:
                 self._writer.write(image)
                 res.frames_written += 1
                 last = image
-                if res.frames_written % 100 == 0:
+                # Threshold, not modulo: duplicated frames can step past a multiple of 100.
+                if res.frames_written >= next_disk_check:
+                    next_disk_check = res.frames_written + 100
                     self._check_disk(res)
         except Exception as exc:  # exception boundary: report, never hide
             log.exception("Recorder failure")
