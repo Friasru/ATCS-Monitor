@@ -252,7 +252,8 @@ class MainWindow(QMainWindow):
 
     def choose_video(self) -> None:
         pattern = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
-        start = str(paths.project_root() / "data" / "test_media")
+        media = paths.project_root() / "data" / "test_media"
+        start = str(media if media.is_dir() else Path.home())
         fn, _ = QFileDialog.getOpenFileName(self, "Open video file", start, f"Video files ({pattern});;All files (*)")
         if fn:
             self.add_video_source(fn)
@@ -286,7 +287,7 @@ class MainWindow(QMainWindow):
         if source is None:
             QMessageBox.information(self, "No source", "Select a camera or open a video file first.")
             return
-        weights = paths.models_dir() / self.settings.model_name
+        weights = paths.find_model(self.settings.model_name)
         if not weights.is_file():
             self._offer_download(weights.name)
             return

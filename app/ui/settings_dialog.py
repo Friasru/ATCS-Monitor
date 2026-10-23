@@ -23,7 +23,7 @@ class SettingsDialog(QDialog):
 
         form = QFormLayout()
         self.model = QComboBox()
-        models = sorted(p.name for p in paths.models_dir().glob("*.pt")) or [settings.model_name]
+        models = paths.available_models() or [settings.model_name]
         if settings.model_name not in models:
             models.insert(0, settings.model_name)
         self.model.addItems(models)

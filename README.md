@@ -57,7 +57,12 @@ cd ATCS-Monitor
 `opencv-python-headless` (the non-headless wheel ships Qt plugins that clash with PySide6), and
 downloads the default model weights.
 
-**Windows:** run `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1` in PowerShell. It creates a
+**Windows users:** run the installer `ATCS-Monitor-1.0.0-Setup-CPU.exe` (or the optional `-CUDA` one for
+NVIDIA GPUs). It creates Desktop and Start menu shortcuts and an uninstaller, needs no administrator rights,
+and keeps recordings, history and settings in `%LOCALAPPDATA%\ATCS Monitor`. See
+[docs/windows.md](docs/windows.md#0-installing-atcs-monitor-no-python-powershell-or-wsl-needed).
+
+**Windows developers:** run `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1` in PowerShell. It creates a
 separate `.venv-win`, so it never touches the Linux `.venv`. Start the app with `.\start.cmd`. Full guide
 (webcam validation, tests, `.exe` build): [docs/windows.md](docs/windows.md).
 
@@ -326,7 +331,7 @@ Verified for the packaged build: it was launched from `/tmp` with
 saved a recording that was validated (224 frames, 14.9 s, first and last frames decodable), stored the session
 in its own `data/` folder, and exited with code 0.
 
-**Windows:** `scripts\build.ps1` builds `dist\windows\atcs-monitor\atcs-monitor.exe`: **3.82 GB** with CUDA, or **0.62 GB** for the CPU-only build (`-Venv .venv-win-cpu -Dist dist\windows-cpu`). Both were validated on the built-in webcam and on video files; see [docs/windows.md](docs/windows.md#8-build-the-windows-executable).
+**Windows:** `scripts\build.ps1` builds `dist\windows\atcs-monitor\atcs-monitor.exe`: **3.82 GB** with CUDA, or **0.62 GB** for the CPU-only build (`-Venv .venv-win-cpu -Dist dist\windows-cpu`). Both were validated on the built-in webcam and on video files; see [docs/windows.md](docs/windows.md#8-build-the-windows-executable). `scripts\build_installer.ps1 [-Flavor cuda]` wraps a build in an Inno Setup installer in `dist\installer\`.
 
 Extra command-line options: `--video FILE`, `--camera INDEX`, `--start`, `--record` (with `--start`), `--quit-after MS`, `--verbose`.
 

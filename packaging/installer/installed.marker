@@ -1,0 +1,3 @@
+Written by the ATCS Monitor installer. While this file is next to atcs-monitor.exe,
+the program stores its database, settings, logs, recordings, exports and downloaded
+models in %LOCALAPPDATA%\ATCS Monitor instead of the program folder (see app/paths.py).

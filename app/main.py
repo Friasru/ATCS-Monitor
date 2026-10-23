@@ -17,6 +17,45 @@ from app import APP_NAME, __version__, paths  # noqa: E402
 
 log = logging.getLogger("atcs_monitor")
 
+# Windows taskbar identity; the installer gives its shortcuts the same ID so pinned
+# shortcuts and running windows group under the app's own icon.
+APP_USER_MODEL_ID = "ATCSMonitor.Desktop"
+# Named kernel objects shared with the installer (packaging/installer/atcs_monitor.iss):
+# the mutex tells Setup/Uninstall the app is running; setting the event asks every
+# running instance to close normally (as if its window were closed), so files can be
+# replaced or removed without killing a recording.
+RUNNING_MUTEX = "ATCSMonitor.Running"
+CLOSE_EVENT = "ATCSMonitor.CloseRequest"
+
+
+def watch_installer_close_requests(window) -> None:
+    """Windows only: hold RUNNING_MUTEX and close `window` when CLOSE_EVENT is set."""
+    import ctypes
+    import threading
+    from ctypes import wintypes
+
+    from PySide6.QtCore import QMetaObject, Qt
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = k32.CreateEventW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.ResetEvent.argtypes = [wintypes.HANDLE]
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    window._win_mutex = k32.CreateMutexW(None, False, RUNNING_MUTEX)  # released when the process ends
+    event = k32.CreateEventW(None, True, False, CLOSE_EVENT)  # manual reset: wakes every instance
+    if not window._win_mutex or not event:
+        log.warning("Installer close-request objects unavailable (error %d)", ctypes.get_last_error())
+        return
+    k32.ResetEvent(event)  # a request left over from an earlier session does not apply to this one
+
+    def wait():
+        if k32.WaitForSingleObject(event, 0xFFFFFFFF) == 0:
+            log.info("The installer asked ATCS Monitor to close")
+            QMetaObject.invokeMethod(window, "close", Qt.ConnectionType.QueuedConnection)
+
+    threading.Thread(target=wait, name="installer-close", daemon=True).start()
+
 
 def setup_logging(verbose: bool = False) -> Path:
     log_file = paths.logs_dir() / "atcs_monitor.log"
@@ -52,18 +91,30 @@ def main(argv: list[str] | None = None) -> int:
 
     paths.configure_third_party_dirs()
     log_file = setup_logging(args.verbose)
-    log.info("%s %s starting (root=%s)", APP_NAME, __version__, paths.project_root())
+    log.info("%s %s starting (data=%s, program=%s, installed=%s)", APP_NAME, __version__, paths.project_root(),
+             paths.install_dir(), paths.is_installed())
 
     from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
 
     from app.settings import load_settings
     from app.storage.repository import Repository, StorageError
     from app.ui.main_window import MainWindow
 
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except (AttributeError, OSError):
+            log.warning("Could not set the Windows AppUserModelID")
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
+    icon = paths.resource_path("atcs_monitor.ico" if sys.platform == "win32" else "atcs_monitor.png")
+    if icon.is_file():
+        app.setWindowIcon(QIcon(str(icon)))
 
     def excepthook(exc_type, exc, tb):
         log.critical("Unhandled exception:\n%s", "".join(traceback.format_exception(exc_type, exc, tb)))
@@ -82,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
 
     win = MainWindow(load_settings(), repo)
     win.show()
+    if sys.platform == "win32":
+        watch_installer_close_requests(win)
 
     def start_selected():
         QTimer.singleShot(300, win.start_monitoring)

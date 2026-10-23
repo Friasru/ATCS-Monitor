@@ -1,12 +1,16 @@
 # PyInstaller spec for ATCS Monitor (one-folder build).
 # Build with: ./scripts/build.sh (Linux) or scripts\build.ps1 (Windows)
+import re
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = SPECPATH + "/.."
+VERSION = re.search(r'__version__ = "([^"]+)"', open(ROOT + "/app/__init__.py", encoding="utf-8").read()).group(1)
+ICON = ROOT + "/app/resources/atcs_monitor.ico"
 
 datas = collect_data_files("ultralytics")  # tracker/model yaml configs, assets
+datas += [(ROOT + "/app/resources", "app/resources")]  # window/taskbar icon
 
 hiddenimports = collect_submodules("ultralytics.trackers") + ["lap"]
 excludes = [
@@ -41,6 +45,27 @@ a = Analysis(
 a.binaries = [b for b in a.binaries if b[0].replace("\\", "/").rsplit("/", 1)[-1].lower() not in UNUSED_TORCH_DLLS]
 pyz = PYZ(a.pure)
 
+version_info = None
+if sys.platform == "win32":
+    from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                     VarFileInfo, VarStruct, VSVersionInfo)
+
+    nums = tuple(int(x) for x in (VERSION.split(".") + ["0"] * 4)[:4])
+    version_info = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=nums, prodvers=nums),
+        kids=[
+            StringFileInfo([StringTable("040904B0", [
+                StringStruct("CompanyName", "ATCS Monitor"),
+                StringStruct("FileDescription", "ATCS Monitor"),
+                StringStruct("FileVersion", VERSION),
+                StringStruct("InternalName", "atcs-monitor"),
+                StringStruct("OriginalFilename", "atcs-monitor.exe"),
+                StringStruct("ProductName", "ATCS Monitor"),
+                StringStruct("ProductVersion", VERSION),
+            ])]),
+            VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
+        ],
+    )
 exe = EXE(
     pyz,
     a.scripts,
@@ -50,5 +75,7 @@ exe = EXE(
     console=False,
     strip=False,
     upx=False,
+    icon=ICON if sys.platform == "win32" else None,
+    version=version_info,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="atcs-monitor")

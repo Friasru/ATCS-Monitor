@@ -84,7 +84,8 @@ class Detector:
         self.model_name = model_name
         self.device_pref = device_pref
         self.tracker = tracker
-        self.models_dir = models_dir or paths.models_dir()
+        self._explicit_models_dir = models_dir
+        self.models_dir = models_dir or paths.models_dir()  # where a download goes
         self.allow_download = allow_download
         self.model = None
         self.device = "cpu"
@@ -98,7 +99,9 @@ class Detector:
 
     @property
     def weights_path(self) -> Path:
-        return self.models_dir / self.model_name
+        if self._explicit_models_dir is not None:
+            return self._explicit_models_dir / self.model_name
+        return paths.find_model(self.model_name)  # also finds weights bundled with an installed copy
 
     def load(self) -> None:
         path = self.weights_path

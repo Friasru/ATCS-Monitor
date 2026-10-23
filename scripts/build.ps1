@@ -13,9 +13,10 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 if (-not [IO.Path]::IsPathRooted($Venv)) { $Venv = Join-Path $Root $Venv }
+if (-not [IO.Path]::IsPathRooted($Dist)) { $Dist = Join-Path $Root $Dist }
 $Py = Join-Path $Venv "Scripts\python.exe"
 if (-not (Test-Path $Py)) { throw "run scripts\setup.ps1 first ($Venv not found)" }
-$Work = "build\" + (Split-Path -Leaf $Dist) + "-work"
+$Work = Join-Path $Root ("build\" + (Split-Path -Leaf $Dist) + "-work")
 
 $env:YOLO_CONFIG_DIR = Join-Path $Root "data\lib_config\ultralytics"
 $env:MPLCONFIGDIR = Join-Path $Root "data\lib_config\matplotlib"
@@ -25,10 +26,22 @@ $env:PYINSTALLER_CONFIG_DIR = Join-Path $Root "build\pyinstaller-cache-win"
 & $Py -c "import sys; sys.path.insert(0, '.'); from app.camera.sources import _windows_camera_names as n; print('DirectShow devices:', n())"
 if ($LASTEXITCODE -ne 0) { throw "could not prepare the DirectShow (comtypes) wrappers" }
 
-& $Py -m PyInstaller --noconfirm --clean --distpath $Dist --workpath $Work packaging\atcs_monitor.spec
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed ($LASTEXITCODE)" }
+# PyInstaller replaces the whole output folder, but a portable build keeps its sessions,
+# settings, recordings and exports inside it: move those aside and put them back.
+$Out = Join-Path $Dist "atcs-monitor"
+$Keep = Join-Path $Dist ("preserved-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+& $Py scripts\preserve_runtime_data.py stash $Out $Keep
+if ($LASTEXITCODE -ne 0) { throw "could not move the previous build's data aside; nothing was built" }
 
-$Out = Join-Path (Resolve-Path $Dist) "atcs-monitor"
+if ($env:ATCS_BUILD_PYINSTALLER) {  # a stand-in used by tests/test_build_preservation.py
+    & $Py $env:ATCS_BUILD_PYINSTALLER --noconfirm --clean --distpath $Dist --workpath $Work packaging\atcs_monitor.spec
+} else {
+    & $Py -m PyInstaller --noconfirm --clean --distpath $Dist --workpath $Work packaging\atcs_monitor.spec
+}
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed ($LASTEXITCODE); the previous build's data (if any) is in $Keep" }
+
+& $Py scripts\preserve_runtime_data.py restore $Out $Keep
+if ($LASTEXITCODE -ne 0) { throw "some of the previous build's data could not be restored; it is in $Keep" }
 foreach ($d in @("models", "recordings", "exports", "data")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Out $d) | Out-Null
 }

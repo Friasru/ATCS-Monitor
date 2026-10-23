@@ -5,8 +5,43 @@ through DirectShow or Media Foundation, and can be packaged as a Windows `.exe`.
 setup (`.venv`, `setup.sh`, `start.sh`, `build.sh`) is unchanged. Windows uses its own
 environment, `.venv-win`, so one checkout can hold both environments.
 
-> Run everything below in **PowerShell** on Windows (not inside WSL). WSL2 cannot see a laptop's
-> built-in webcam without `usbipd`, while native Windows uses it directly.
+> Run the developer steps below in **PowerShell** on Windows (not inside WSL). WSL2 cannot see a
+> laptop's built-in webcam without `usbipd`, while native Windows uses it directly.
+
+## 0. Installing ATCS Monitor (no Python, PowerShell or WSL needed)
+
+There are two installers. Install **one**; installing the other later replaces it and keeps your data.
+
+| Installer | Size | For |
+|---|---|---|
+| `ATCS-Monitor-1.0.0-Setup-CPU.exe` (recommended) | 175 MB (638 MB installed) | any 64-bit Windows 10/11 PC |
+| `ATCS-Monitor-1.0.0-Setup-CUDA.exe` (optional) | 1.6 GB (about 3.9 GB installed) | PCs with an NVIDIA GPU and an up-to-date driver: about 2× faster per frame and finds more distant objects (960 px inference) |
+
+1. Double-click the installer and choose **Install for me only** (no administrator rights needed,
+   installs to `%LOCALAPPDATA%\Programs\ATCS Monitor`), or *Install for all users* (asks for administrator rights).
+2. Keep **Create a desktop shortcut** ticked and finish. Setup offers to start the app.
+3. Start it later from the **ATCS Monitor** shortcut on the desktop or in the Start menu.
+
+The installer is not code-signed, so Windows SmartScreen may show "Windows protected your PC" the first
+time. Choose **More info → Run anyway**.
+
+**Where your data goes.** The program folder is never written to. Each Windows user's sessions, settings,
+logs, recordings and exports are kept in `%LOCALAPPDATA%\ATCS Monitor`:
+
+| Folder | Contents |
+|---|---|
+| `recordings\` | annotated MP4 recordings (**History → Open Recordings Folder** opens it) |
+| `exports\` | CSV/JSON exports |
+| `data\` | `atcs_monitor.sqlite3` (session history), `settings.json`, `logs\atcs_monitor.log` |
+| `models\` | model weights you download later. The bundled `yolo26n.pt` and `yolo11n.pt` stay in the program folder. |
+
+**Updating or switching** CPU ↔ CUDA: run the other or newer installer. A running ATCS Monitor is asked
+to close first. It finishes and saves any recording in progress, exactly as if you had closed the window.
+
+**Uninstalling:** *Settings → Apps → Installed apps → ATCS Monitor → Uninstall*, or *ATCS Monitor* in
+*Control Panel → Programs*. This removes the program and its shortcuts. **Your recordings, history, exports and
+settings are kept** in `%LOCALAPPDATA%\ATCS Monitor`; the uninstaller tells you where they are. Delete
+that folder yourself if you no longer need them. Uninstalling also closes a running ATCS Monitor normally first.
 
 ## 1. Requirements
 
@@ -177,6 +212,39 @@ The build goes to `dist\windows\atcs-monitor\` so that it never overwrites the L
 `recordings\`, `exports\` and `models\` next to `atcs-monitor.exe`. It is a windowed app with no
 console, so check `data\logs\atcs_monitor.log` next to the `.exe` for diagnostics.
 
+### Build the installers
+
+```powershell
+# CPU installer (default): needs .venv-win-cpu (setup.ps1 -Cpu -Venv .venv-win-cpu)
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1 -Rebuild
+# optional CUDA installer: needs .venv-win (setup.ps1 on a machine with an NVIDIA driver)
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1 -Flavor cuda -Rebuild
+```
+
+Output: `dist\installer\ATCS-Monitor-<version>-Setup-CPU.exe` / `-CUDA.exe`. The script prints each file's size and SHA-256.
+
+* **Tooling.** [Inno Setup](https://jrsoftware.org/isinfo.php) 6.7.3 is downloaded once from its official
+  GitHub release, the SHA-256 is checked, and it is unpacked in portable mode into `build\tools\`.
+  Nothing is installed system-wide. The script is `packaging\installer\atcs_monitor.iss`.
+* `-Rebuild` runs `build.ps1` first. Without it, the existing `dist\windows*\` folder is packaged. The script
+  refuses to build without bundled weights, or from an environment whose PyTorch does not match `-Flavor`.
+* **What gets packaged.** The PyInstaller folder, **except** its `data\`, `recordings\` and `exports\` runtime
+  folders (a portable build may contain someone's sessions and videos), plus `installed.marker`. The marker
+  switches the program to the per-user data folder (`app/paths.py`).
+* **Rebuilding keeps portable data.** PyInstaller replaces the whole output folder, so `build.ps1` and
+  `build.sh` move a portable build's `data`, `recordings` and `exports` into `dist\...\preserved-<time>\`
+  before building, and move them back afterwards (`scripts/preserve_runtime_data.py`). Nothing is overwritten.
+  If the build fails, or a file cannot be put back, the data stays in that folder and the script says so.
+  `tests/test_build_preservation.py` runs the real build scripts against a stand-in PyInstaller to check this.
+* **Icon.** `app\resources\atcs_monitor.ico`, generated by `scripts\make_icon.py`. It is used for the `.exe`,
+  the installer, the shortcuts, Apps & features and the app window. The `.exe` also carries Windows version information.
+* **Running app during setup.** The app holds the mutex `ATCSMonitor.Running` and closes itself normally when
+  the installer sets the event `ATCSMonitor.CloseRequest`. Setup and Uninstall do that, then wait up to 60 s.
+  If the app is still running after that, an interactive setup asks you to close it, and a silent one stops
+  without changing anything.
+* Silent install for IT deployment: `ATCS-Monitor-1.0.0-Setup-CPU.exe /SILENT` (or `/VERYSILENT`).
+  Uninstall silently with `"%LOCALAPPDATA%\Programs\ATCS Monitor\unins000.exe" /SILENT`.
+
 ### Executable size
 
 The first CUDA build was **4.48 GB**. About 90 % of that is PyTorch, mostly NVIDIA libraries:
@@ -248,6 +316,25 @@ Machine: Windows 11 (build 26300), Python 3.14.7, RTX 5060 Laptop GPU (driver 61
 | Both `.exe`, `--camera 0 --start --record` (45 s) | person detected and tracked, 0 false crossings, recording fully decodable (534 / 590 frames), DB integrity ok, exports consistent, exit 0 |
 | `.exe --camera 0 --start --record` (run from `%TEMP%`) | Camera opened via DirectShow, session `completed`, recording 214 frames / 14.3 s, all decodable. DB integrity ok, exports consistent, exit 0. No person was in view, so this run had 0 detections |
 | `.exe --video street_slovenska.mp4 --start --record` | 118 unique objects detected on CUDA, recording 537 frames / 35.8 s, all decodable, exit 0 |
+
+### Installer validation (2026-10-23, same machine)
+
+| Check | CPU installer | CUDA installer |
+|---|---|---|
+| Install (`/SILENT`, per user, no admin) | exit 0, 19 s, 638 MB in `%LOCALAPPDATA%\Programs\ATCS Monitor` | exit 0, 87 s, 3.9 GB |
+| Packaged content | `.exe`, `_internal`, both weights, marker, uninstaller. No `data`/`recordings`/`exports`. | same |
+| Desktop + Start menu shortcuts "ATCS Monitor", Apps & features entry, icon, version info | yes | yes |
+| Double-click shows the install-mode dialog with the app icon ("Install for me only" recommended) | yes (screenshot) | – |
+| Launch from the Start menu / Desktop shortcut (no Python, PowerShell or WSL) | window in 2 s, title-bar icon, camera listed, normal close exit 0 | window in 2 s |
+| Data location in installed mode | `%LOCALAPPDATA%\ATCS Monitor`. The program folder is byte-identical before and after use (2,981 files). | same |
+| Webcam: discover, detect, record, close | DirectShow "Integrated Camera", `yolo26n` on CPU, person detected, recording 409 frames all decodable, DB integrity ok, exports consistent, exit 0 | `cuda:0`, person detected, exit 0 |
+| Reinstall keeps history | 1 session before, 2 after a new run | – |
+| Switch CUDA ↔ CPU | CPU over CUDA: 0 CUDA DLLs left (640 MB) | CUDA over CPU works, GPU used |
+| Upgrade while recording | app closed itself in about 1 s, recording finalized (137 frames, decodable), setup exit 0 | – |
+| Uninstall while recording | app closed itself, recording finalized (128 frames, decodable), program, shortcuts and entry removed, user data kept | same |
+
+Not tested: the *Install for all users* (administrator) path, the interactive uninstaller's "your data was kept"
+message (the silent uninstaller does not show it), and machines other than this one.
 
 Notes:
 * **Crossings:** the two webcam crossings in the first run came from one track straddling the centre line
