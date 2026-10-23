@@ -24,7 +24,7 @@ RESOLUTIONS = ((640, 480), (1280, 720), (1920, 1080))
 
 @dataclass
 class Settings:
-    model_name: str = "yolo11n.pt"
+    model_name: str = "yolo26n.pt"
     confidence: float = 0.35
     iou: float = 0.5
     imgsz: int = 640

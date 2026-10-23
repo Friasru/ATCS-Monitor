@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import uuid
+from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
@@ -473,7 +474,7 @@ class MonitoringEngine:
             self._report_error(f"Cannot start recording: {exc}")
             return None, None
         rec_id = self.repo.add_recording(session_id, res.path, res.codec, res.container, iso())
-        self._set_state(State.RECORDING, f"Recording to {res.path}")
+        self._set_state(State.RECORDING, f"Recording to {Path(res.path).name}")
         return recorder, rec_id
 
     def _finish_recording(self, recorder: VideoRecorder, rec_id: Optional[int]) -> float:

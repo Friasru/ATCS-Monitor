@@ -37,3 +37,16 @@ def require_media(name: str) -> Path:
     if not p.is_file():
         pytest.skip(f"test video {p} not present (run scripts/fetch_test_media.sh)")
     return p
+
+# GUI tests run on Qt's offscreen platform (no real display needed).
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+@pytest.fixture
+def model_home(home):
+    """Isolated project home whose models/ links to the real weights."""
+    require_model()
+    (home / "models").mkdir(exist_ok=True)
+    for w in MODELS.glob("*.pt"):
+        (home / "models" / w.name).symlink_to(w)
+    return home
